@@ -3,7 +3,7 @@
 import random
 from scapy.all import IP, TCP, hexdump
 import socket
-from subprocess import run
+from subprocess import run, PIPE
 import sys
 
 lport = 8255
@@ -29,22 +29,38 @@ def giveup(msg):
     exit(1)
 
 def docker_start():
-    run(['/usr/bin/docker', 'run', '--rm', 'ghchal1client', '/usr/sbin/sshd/'])
+    run_process = run(['/usr/bin/docker', 'run', '-d', 'ghchal1client'], stdout=PIPE)
+    container_id = run_process.stdout.decode('utf8').strip('\n')
+    print("Created new container {}".format(container_id))
+    inspect_process = run(['/usr/bin/docker',
+        'inspect',
+        '--format=\'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}\'',
+        container_id], stdout=PIPE)
+    ip = inspect_process.stdout.decode('utf8')
+    print("New container address : {}".format(ip)).strip('\n')
+    return container_id, ip
 
-def iptables_route(p.src):
+def docker_stop(container):
+    run(['/usr/bin/docker', 'stop', container])
+    run(['/usr/bin/docker', 'rm', container])
+
+def iptables_route(client_addr, container_addr):
     run(['/usr/bin/iptables', ''])
 
 def remove_mapping(client):
     print("Removing mapping for client {}".format(client))
-    del mapping[client]
+    container = mappings[client][0]
+    docker_stop(container)
+    del mappings[client]
 
 def add_mapping(p):
-    print("Adding dynamic mapping from client {}".format(p.src))
-    if mapping[p.src]:
+    print("Adding dynamic mapping for client {}".format(p.src))
+    if p.src in mappings:
         remove_mapping(p.src)
     container_id, container_addr = docker_start()
-    iptables_route(p.src, container_addr)
-    mapping[p.src] = (container_addr, container_id)
+    #iptables_route(p.src, container_addr)
+    mappings[p.src] = (container_id, container_addr)
+    print(mappings)
 
 def filter_packet(p):
     return p.dport == lport and (lhost == '' or p.dst == lhost)
