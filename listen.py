@@ -2,6 +2,7 @@
 
 import random
 from scapy.all import IP, TCP, hexdump
+import signal
 import socket
 from subprocess import run, PIPE
 import sys
@@ -24,8 +25,14 @@ s.bind((lhost, 0))
 
 mappings = {}
 
+def sigint_handler(signal, frame):
+    giveup("Received sigint")
+
 def giveup(msg):
     print("{}".format(msg))
+    print("Cleaning up containers")
+    for (client_ip, (container_id, container_ip)) in mappings.items():
+        docker_stop(container_id)
     exit(1)
 
 def docker_start():
@@ -36,8 +43,8 @@ def docker_start():
         'inspect',
         '--format=\'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}\'',
         container_id], stdout=PIPE)
-    ip = inspect_process.stdout.decode('utf8')
-    print("New container address : {}".format(ip)).strip('\n')
+    ip = inspect_process.stdout.decode('utf8').strip('\n')
+    print("New container address : {}".format(ip))
     return container_id, ip
 
 def docker_stop(container):
@@ -64,6 +71,8 @@ def add_mapping(p):
 
 def filter_packet(p):
     return p.dport == lport and (lhost == '' or p.dst == lhost)
+
+signal.signal(signal.SIGINT, sigint_handler)
 
 while True:
     packets = IP(s.recv(max_syn_size))
