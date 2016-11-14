@@ -9,7 +9,6 @@ import sys
 lport = 8255
 lhost = ''
 max_syn_size = 128
-portrange = list(random.sample(range(2000, 3000), 255))
 
 FIN = 0x01
 SYN = 0x02
@@ -30,20 +29,16 @@ def giveup(msg):
     exit(1)
 
 def remove_mapping(client):
-    print("Removing mapping for client {} to port {}".format(client, mapping[client][0]))
+    print("Removing mapping for client {}".format(client))
     del mapping[client]
 
 def add_mapping(p):
-    if len(portrange) == 0:
-        # All slots are used, just kill everything and die
-        giveup("Error, no more mapping to allocate")
-    newport = portrange.pop()
-    print("Adding dynamic mapping from client {} to port {}".format(p.src, newport))
+    print("Adding dynamic mapping from client {}".format(p.src))
     if mapping[p.src]:
         remove_mapping(p.src)
-    container_id = docker_start(newport)
-    iptables_route(p.src, newport)
-    mapping[p.src] = (newport, container_id)
+    container_id, container_addr = docker_start()
+    iptables_route(p.src)
+    mapping[p.src] = (container_addr, container_id)
 
 def filter_packet(p):
     return p.dport == lport and (lhost == '' or p.dst == lhost)
