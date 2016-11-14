@@ -30,8 +30,11 @@ def sigint_handler(signal, frame):
 
 def giveup(msg):
     print("{}".format(msg))
+    print("Stop dropping RST")
+    iptables_rst_rst()
     print("Cleaning up containers")
-    for (client_ip, (container_id, container_ip)) in mappings.items():
+    for (client_addr, (container_id, container_addr, dst_addr)) in mappings.items():
+        iptables_route('-D', client_addr, container_addr, dst_addr)
         docker_stop(container_id)
     exit(1)
 
@@ -51,28 +54,45 @@ def docker_stop(container):
     run(['/usr/bin/docker', 'stop', container])
     run(['/usr/bin/docker', 'rm', container])
 
-def iptables_route(client_addr, container_addr):
-    run(['/usr/bin/iptables', ''])
+def iptables_route(action, client_addr, container_addr, own_addr):
+    run(['/usr/bin/iptables', '-t', 'nat', action, 'PREROUTING',
+        '-s', client_addr, '-d', own_addr,
+        '-p', 'tcp', '!', '--syn', '--dport', '8255',
+        '-j', 'DNAT', '--to-destination', container_addr+':2222'])
 
 def remove_mapping(client):
     print("Removing mapping for client {}".format(client))
-    container = mappings[client][0]
-    docker_stop(container)
+    container_id, container_addr, dst_addr  = mappings[client]
+    iptables_route('-D', client, container_addr, dst_addr)
+    docker_stop(container_id)
     del mappings[client]
 
 def add_mapping(p):
     print("Adding dynamic mapping for client {}".format(p.src))
     if p.src in mappings:
-        remove_mapping(p.src)
+        #remove_mapping(p.src)
+        print("Ignoring SYN because of preexisting mapping")
+        return
     container_id, container_addr = docker_start()
-    #iptables_route(p.src, container_addr)
-    mappings[p.src] = (container_id, container_addr)
+    iptables_route('-A', p.src, container_addr, p.dst)
+    mappings[p.src] = (container_id, container_addr, p.dst)
     print(mappings)
 
 def filter_packet(p):
     return p.dport == lport and (lhost == '' or p.dst == lhost)
 
+def iptables_stop_rst():
+    run(['iptables', '-t', 'filter', '-A', 'OUTPUT', '-p', 'tcp',
+        '--tcp-flags', 'ALL', 'RST,ACK',
+        '--sport', str(lport), '-j', 'DROP'])
+
+def iptables_rst_rst():
+    run(['iptables', '-t', 'filter', '-D', 'OUTPUT',
+        '-p', 'tcp', '--tcp-flags', 'ALL', 'RST,ACK',
+        '--sport', str(lport), '-j', 'DROP'])
+
 signal.signal(signal.SIGINT, sigint_handler)
+iptables_stop_rst()
 
 while True:
     packets = IP(s.recv(max_syn_size))
