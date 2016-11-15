@@ -1,16 +1,18 @@
 #!/usr/bin/python3
 
 import random
-from scapy.all import IP, TCP, hexdump
+from scapy.all import IP, TCP, hexdump, send
 import signal
 import socket
 from subprocess import run, PIPE, DEVNULL
 import sys
 
-lport = 8255
-lhost = ''
-max_syn_size = 128
+# Configuration:
+lport = 8255 # Local port
+dport = 2222 # Container port
+lhost = ''   # Local address to listen on
 
+max_syn_size = 160
 FIN = 0x01
 SYN = 0x02
 RST = 0x04
@@ -19,9 +21,6 @@ ACK = 0x10
 URG = 0x20
 ECE = 0x40
 CWR = 0x80
-
-s = socket.socket(family=socket.AF_INET, type=socket.SOCK_RAW, proto=socket.IPPROTO_TCP)
-s.bind((lhost, 0))
 
 mappings = {}
 
@@ -103,6 +102,9 @@ def iptables_del_chain():
     run(['iptables', '-t', 'nat', '-F', 'DISPATCHER'], stderr=DEVNULL)
     run(['iptables', '-t', 'nat', '-X', 'DISPATCHER'], stderr=DEVNULL)
 
+s = socket.socket(family=socket.AF_INET, type=socket.SOCK_RAW, proto=socket.IPPROTO_TCP)
+s.bind((lhost, 0))
+
 signal.signal(signal.SIGINT, sigint_handler)
 iptables_del_chain()
 iptables_add_chain()
@@ -114,4 +116,9 @@ while True:
         if filter_packet(p) and (p[TCP].flags == SYN):
             p.show()
             add_mapping(p)
+            new_dst = mappings[p.src][1]
+            print("Forwarding SYN to {}, address :{}", mappings[p.src][0], new_dst)
+            p.dst = new_dst
+            p.dport = dport
+            send(p)
 
