@@ -6,6 +6,7 @@ import signal
 import socket
 from subprocess import run, PIPE, DEVNULL
 import sys
+import time
 
 # Configuration:
 lport = 8255 # Local port
@@ -30,7 +31,7 @@ def sigint_handler(signal, frame):
 def giveup(msg):
     print("{}".format(msg))
     print("Stop dropping RST")
-    iptables_rst_rst()
+    iptables_rst('-D', 'OUTPUT', str(lport))
     print("Cleaning up containers")
     for (client_addr, (container_id, container_addr, dst_addr)) in mappings.items():
         docker_stop(container_id)
@@ -54,10 +55,10 @@ def docker_stop(container):
     run(['/usr/bin/docker', 'rm', container])
 
 def iptables_route(action, client_addr, container_addr, own_addr):
-    run(['/usr/bin/iptables', '-t', 'nat', action, 'DISPATCHER',
+    run(['/usr/bin/iptables', '-t', 'nat', action, 'DISPATCHER', '1',
         '-s', client_addr, '-d', own_addr,
         '-p', 'tcp', '--dport', '8255',
-        #'!', '--syn',
+        #'!', '--syn', # We have to let syn go through or the dnat target won't work
         '-j', 'DNAT', '--to-destination', container_addr+':2222'])
 
 def remove_mapping(client):
@@ -74,22 +75,22 @@ def add_mapping(p):
         print("Ignoring SYN because of preexisting mapping")
         return
     container_id, container_addr = docker_start()
-    iptables_route('-I', '1', p.src, container_addr, p.dst)
+    # Give some time for the container to get up
+    time.sleep(1)
+    iptables_route('-I', p.src, container_addr, p.dst)
     mappings[p.src] = (container_id, container_addr, p.dst)
     print(mappings)
 
 def filter_packet(p):
     return p.dport == lport and (lhost == '' or p.dst == lhost)
 
-def iptables_stop_rst():
-    run(['iptables', '-t', 'filter', '-A', 'OUTPUT', '-p', 'tcp',
-        '--tcp-flags', 'ALL', 'RST,ACK',
-        '--sport', str(lport), '-j', 'DROP'])
-
-def iptables_rst_rst():
-    run(['iptables', '-t', 'filter', '-D', 'OUTPUT',
-        '-p', 'tcp', '--tcp-flags', 'ALL', 'RST,ACK',
-        '--sport', str(lport), '-j', 'DROP'])
+def iptables_rst(action, chain, src_port, dst=None):
+    command = ['iptables', '-t', 'filter', action, chain, '-p', 'tcp',
+        '--tcp-flags', 'ALL', 'RST,ACK']
+    if dst:
+        command.extend(['-d', dst])
+    command.extend(['--sport', src_port, '-j', 'DROP'])
+    run(command)
 
 def iptables_add_chain():
     run(['iptables', '-t', 'nat', '-N', 'DISPATCHER'])
@@ -109,7 +110,7 @@ s.bind((lhost, 0))
 signal.signal(signal.SIGINT, sigint_handler)
 iptables_del_chain()
 iptables_add_chain()
-iptables_stop_rst()
+iptables_rst('-A', 'OUTPUT', str(lport))
 
 while True:
     packets = IP(s.recv(max_syn_size))
@@ -118,8 +119,4 @@ while True:
             p.show()
             add_mapping(p)
             new_dst = mappings[p.src][1]
-            print("Forwarding SYN to {}, address :{}", mappings[p.src][0], new_dst)
-            p.dst = new_dst
-            p.dport = dport
-            send(p)
 
