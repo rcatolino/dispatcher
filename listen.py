@@ -4,7 +4,7 @@ import random
 from scapy.all import IP, TCP, hexdump
 import signal
 import socket
-from subprocess import run, PIPE
+from subprocess import run, PIPE, DEVNULL
 import sys
 
 lport = 8255
@@ -34,8 +34,8 @@ def giveup(msg):
     iptables_rst_rst()
     print("Cleaning up containers")
     for (client_addr, (container_id, container_addr, dst_addr)) in mappings.items():
-        iptables_route('-D', client_addr, container_addr, dst_addr)
         docker_stop(container_id)
+    iptables_del_chain()
     exit(1)
 
 def docker_start():
@@ -55,7 +55,7 @@ def docker_stop(container):
     run(['/usr/bin/docker', 'rm', container])
 
 def iptables_route(action, client_addr, container_addr, own_addr):
-    run(['/usr/bin/iptables', '-t', 'nat', action, 'PREROUTING',
+    run(['/usr/bin/iptables', '-t', 'nat', action, 'DISPATCHER',
         '-s', client_addr, '-d', own_addr,
         '-p', 'tcp', '!', '--syn', '--dport', '8255',
         '-j', 'DNAT', '--to-destination', container_addr+':2222'])
@@ -74,7 +74,7 @@ def add_mapping(p):
         print("Ignoring SYN because of preexisting mapping")
         return
     container_id, container_addr = docker_start()
-    iptables_route('-A', p.src, container_addr, p.dst)
+    iptables_route('-I', '1', p.src, container_addr, p.dst)
     mappings[p.src] = (container_id, container_addr, p.dst)
     print(mappings)
 
@@ -91,7 +91,21 @@ def iptables_rst_rst():
         '-p', 'tcp', '--tcp-flags', 'ALL', 'RST,ACK',
         '--sport', str(lport), '-j', 'DROP'])
 
+def iptables_add_chain():
+    run(['iptables', '-t', 'nat', '-N', 'DISPATCHER'])
+    run(['iptables', '-t', 'nat', '-A', 'DISPATCHER', '-j', 'RETURN'])
+    run(['iptables', '-t', 'nat', '-A', 'PREROUTING', '-p', 'tcp',
+        '-m', 'addrtype', '--dst-type', 'LOCAL', '-j', 'DISPATCHER'])
+
+def iptables_del_chain():
+    run(['iptables', '-t', 'nat', '-D', 'PREROUTING', '-p', 'tcp',
+        '-m', 'addrtype', '--dst-type', 'LOCAL', '-j', 'DISPATCHER'], stderr=DEVNULL)
+    run(['iptables', '-t', 'nat', '-F', 'DISPATCHER'], stderr=DEVNULL)
+    run(['iptables', '-t', 'nat', '-X', 'DISPATCHER'], stderr=DEVNULL)
+
 signal.signal(signal.SIGINT, sigint_handler)
+iptables_del_chain()
+iptables_add_chain()
 iptables_stop_rst()
 
 while True:
