@@ -56,7 +56,8 @@ def docker_stop(container):
 def iptables_route(action, client_addr, container_addr, own_addr):
     run(['/usr/bin/iptables', '-t', 'nat', action, 'DISPATCHER',
         '-s', client_addr, '-d', own_addr,
-        '-p', 'tcp', '!', '--syn', '--dport', '8255',
+        '-p', 'tcp', '--dport', '8255',
+        #'!', '--syn',
         '-j', 'DNAT', '--to-destination', container_addr+':2222'])
 
 def remove_mapping(client):
