@@ -31,7 +31,8 @@ def sigint_handler(signal, frame):
 def giveup(msg):
     print("{}".format(msg))
     print("Stop dropping RST")
-    iptables_rst('-D', 'OUTPUT', str(lport))
+    iptables_rst('-D', str(lport))
+    tee_fin('-D')
     print("Cleaning up containers")
     for (client_addr, (container_id, container_addr, dst_addr)) in mappings.items():
         docker_stop(container_id)
@@ -55,23 +56,24 @@ def docker_stop(container):
     run(['/usr/bin/docker', 'rm', container])
 
 def iptables_route(action, client_addr, container_addr, own_addr):
-    run(['/usr/bin/iptables', '-t', 'nat', action, 'DISPATCHER', '1',
-        '-s', client_addr, '-d', own_addr,
+    command = ['/usr/bin/iptables', '-t', 'nat', action, 'DISPATCHER']
+    if action == '-I':
+        command.append('1')
+    command.extend(['-s', client_addr, '-d', own_addr,
         '-p', 'tcp', '--dport', '8255',
         #'!', '--syn', # We have to let syn go through or the dnat target won't work
         '-j', 'DNAT', '--to-destination', container_addr+':2222'])
+    run(command)
 
-def remove_mapping(client):
-    print("Removing mapping for client {}".format(client))
-    container_id, container_addr, dst_addr  = mappings[client]
-    iptables_route('-D', client, container_addr, dst_addr)
+def remove_mapping(container_id, container_addr, client_addr, own_addr):
+    print("Removing mapping for client {}".format(client_addr))
+    iptables_route('-D', client_addr, container_addr, own_addr)
     docker_stop(container_id)
-    del mappings[client]
+    del mappings[client_addr]
 
 def add_mapping(p):
     print("Adding dynamic mapping for client {}".format(p.src))
     if p.src in mappings:
-        #remove_mapping(p.src)
         print("Ignoring SYN because of preexisting mapping")
         return
     container_id, container_addr = docker_start()
@@ -84,13 +86,20 @@ def add_mapping(p):
 def filter_packet(p):
     return p.dport == lport and (lhost == '' or p.dst == lhost)
 
-def iptables_rst(action, chain, src_port, dst=None):
-    command = ['iptables', '-t', 'filter', action, chain, '-p', 'tcp',
-        '--tcp-flags', 'ALL', 'RST,ACK']
-    if dst:
-        command.extend(['-d', dst])
-    command.extend(['--sport', src_port, '-j', 'DROP'])
+def iptables_rst(action, src_port):
+    command = ['iptables', '-t', 'filter', action, 'OUTPUT',
+            '-p', 'tcp', '--tcp-flags', 'ALL', 'RST,ACK',
+            '--sport', src_port, '-j', 'DROP']
     run(command)
+
+def tee_fin(action):
+    gw = '127.0.0.1'
+    if lhost != '':
+        gw = lhost
+    run(['iptables', '-t', 'mangle', action, 'FORWARD', '-p', 'tcp',
+        '--tcp-flags', 'FIN', 'FIN', '-j', 'TEE', '--gateway', gw])
+    run(['iptables', '-t', 'mangle', action, 'FORWARD', '-p', 'tcp',
+        '--tcp-flags', 'RST', 'RST', '-j', 'TEE', '--gateway', gw])
 
 def iptables_add_chain():
     run(['iptables', '-t', 'nat', '-N', 'DISPATCHER'])
@@ -110,7 +119,8 @@ s.bind((lhost, 0))
 signal.signal(signal.SIGINT, sigint_handler)
 iptables_del_chain()
 iptables_add_chain()
-iptables_rst('-A', 'OUTPUT', str(lport))
+iptables_rst('-A', str(lport))
+tee_fin('-A')
 
 while True:
     packets = IP(s.recv(max_syn_size))
@@ -119,4 +129,21 @@ while True:
             p.show()
             add_mapping(p)
             new_dst = mappings[p.src][1]
+        elif (p[TCP].flags & FIN or p[TCP].flags & RST) and p.dst in mappings:
+            print("End of the connection :( by container")
+            # Check that the source is indeed the container :
+            (container_id, container_addr, own_addr) = mappings[p.dst]
+            if p.src == container_addr:
+                remove_mapping(container_id, container_addr, p.dst, own_addr)
+            else:
+                print("End packet received from {} instead of {}".format(p.src, container_addr))
+                p.show()
+        elif (p[TCP].flags & FIN or p[TCP].flags & RST) and p.src in mappings:
+            print("End of the connection :( by service")
+            (container_id, container_addr, own_addr) = mappings[p.src]
+            if p.dst == container_addr:
+                remove_mapping(container_id, container_addr, p.src, own_addr)
+            else:
+                print("End packet sent from {} instead of {}".format(p.src, container_addr))
+                p.show()
 
