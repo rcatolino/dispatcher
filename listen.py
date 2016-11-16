@@ -40,7 +40,8 @@ def giveup(msg):
     exit(1)
 
 def docker_start():
-    run_process = run(['/usr/bin/docker', 'run', '-d', 'ghchal1client'], stdout=PIPE)
+    run_process = run(['/usr/bin/docker', 'run', '--net', 'chalnet',
+        '--cap-add', 'NET_ADMIN', '--cap-add', 'SYS_PTRACE', '-d', 'gh1'], stdout=PIPE)
     container_id = run_process.stdout.decode('utf8').strip('\n')
     print("Created new container {}".format(container_id))
     inspect_process = run(['/usr/bin/docker',
@@ -60,9 +61,9 @@ def iptables_route(action, client_addr, container_addr, own_addr):
     if action == '-I':
         command.append('1')
     command.extend(['-s', client_addr, '-d', own_addr,
-        '-p', 'tcp', '--dport', '8255',
+        '-p', 'tcp', '--dport', str(lport),
         #'!', '--syn', # We have to let syn go through or the dnat target won't work
-        '-j', 'DNAT', '--to-destination', container_addr+':2222'])
+        '-j', 'DNAT', '--to-destination', container_addr+':'+str(dport)])
     run(command)
 
 def remove_mapping(container_id, container_addr, client_addr, own_addr):
